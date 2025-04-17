@@ -8,6 +8,17 @@ from tqdm import tqdm
 from scipy import io
 import numpy as np
 import argparse
+from models import Generator as Generator_freeform
+import argparse
+import os
+import torch
+from shutil import rmtree
+from models import Generator as Generator_freeform
+from easing_functions.easing import LinearInOut
+from easing_functions import QuadEaseInOut, SineEaseIn, SineEaseInOut, SineEaseOut, ElasticEaseIn, ElasticEaseInOut, ElasticEaseOut
+from torchvision import utils as vutils
+from tqdm import tqdm
+import cv2
 
 from easing_functions import QuadEaseInOut
 from easing_functions import SineEaseIn, SineEaseInOut, SineEaseOut
@@ -165,57 +176,58 @@ def make_video_from_latents(net, selected_latents, frames_dist_folder, video_nam
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Generate a video from latent vectors using a GAN model.")
+    parser.add_argument("--frames_dist_folder", type=str, default="project_video_frames", help="Folder to save generated images.")
+    parser.add_argument("--ckpt_path", type=str, required=True, help="Path to the model checkpoint.")
+    parser.add_argument("--video_name", type=str, default="generated_video.mp4", help="Name of the output video.")
+    parser.add_argument("--model_type", type=str, default="freeform", choices=["freeform", "stylegan2"], help="Type of the model.")
+    parser.add_argument("--fps", type=int, default=30, help="Frames per second for the video.")
+    parser.add_argument("--minutes", type=int, default=1, help="Length of the video in minutes.")
+    parser.add_argument("--im_size", type=int, default=1024, help="Image size for generated frames.")
+    parser.add_argument("--ease_fn", type=str, default="SineEaseInOut", choices=list(ease_fn_dict.keys()), help="Easing function for interpolation.")
+    parser.add_argument("--init_kf_nbr", type=int, default=15, help="Initial number of keyframes.")
 
+    args = parser.parse_args()
 
-    device = torch.device('cuda:%d'%(0))
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
-    load_model_err = 0
-
-    from models import Generator as Generator_freeform
-    
-    frames_dist_folder = 'project_video_frames' # a folder to save generated images
-    ckpt_path = './time_1024_1/models/180000.pth' # path to the checkpoint
-    video_name = 'videl_keyframe_15'  # name of the generated video
-
-    model_type = 'freeform'
+    # Load the model
     net = Generator_freeform(ngf=64, nz=100)
-    net.load_state_dict(torch.load(ckpt_path)['g'])
+    net.load_state_dict(torch.load(args.ckpt_path, map_location=device)['g'])
     net.to(device)
     net.eval()
 
-    
+    # Prepare folders
     try:
-        rmtree(frames_dist_folder)
+        rmtree(args.frames_dist_folder)
     except:
         pass
-    os.makedirs(frames_dist_folder, exist_ok=True)
+    os.makedirs(args.frames_dist_folder, exist_ok=True)
 
-    fps = 30
-    minutes = 1
-    im_size = 1024
-    
-    ease_fn=ease_fn_dict['SineEaseInOut']
+    # Video generation parameters
+    fps = args.fps
+    minutes = args.minutes
+    im_size = args.im_size
+    ease_fn = ease_fn_dict[args.ease_fn]
+    init_kf_nbr = args.init_kf_nbr
 
-    init_kf_nbr = 15
-    nbr_key_frames_per_minute = [init_kf_nbr-i for i in range(minutes)]
+    nbr_key_frames_per_minute = [init_kf_nbr - i for i in range(minutes)]
     nbr_key_frames_total = sum(nbr_key_frames_per_minute)
-    noises = torch.randn( nbr_key_frames_total , 100).to(device)
+    noises = torch.randn(nbr_key_frames_total, 100).to(device)
     user_selected_noises = [n for n in noises]
-    nbr_interpolation_list = [[fps*60//nbr_kf]*nbr_kf for nbr_kf in nbr_key_frames_per_minute]
+    nbr_interpolation_list = [[fps * 60 // nbr_kf] * nbr_kf for nbr_kf in nbr_key_frames_per_minute]
     nbl = []
     for nb in nbr_interpolation_list:
         nbl += nb
 
-    print(len(nbl)) 
-    print(len(user_selected_noises))# , print("mismatch size")
     main_zs = []
-    for idx in range(len(user_selected_noises)-1):
-        main_zs += interpolate_ease_inout(user_selected_noises[idx], 
-                            user_selected_noises[idx+1], nbl[idx], ease_fn, model_type)
+    for idx in range(len(user_selected_noises) - 1):
+        main_zs += interpolate_ease_inout(user_selected_noises[idx],
+                                          user_selected_noises[idx + 1], nbl[idx], ease_fn, args.model_type)
     for idx in range(100):
         main_zs.append(main_zs[-1])
-    print('generating images ...')
-    batch_generate_and_save(net, main_zs, folder_name=frames_dist_folder, batch_size=8, model_type=model_type, im_size=im_size)
-    print('making videos ...')
-    read_img_and_make_video(frames_dist_folder, video_name, fps=fps)
 
+    print('Generating images...')
+    batch_generate_and_save(net, main_zs, folder_name=args.frames_dist_folder, batch_size=8, model_type=args.model_type, im_size=im_size)
+    print('Making video...')
+    read_img_and_make_video(args.frames_dist_folder, args.video_name, fps=fps)
